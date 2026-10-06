@@ -1,0 +1,499 @@
+import { useEffect, useMemo, useState } from 'react';
+
+const packagePrices = {
+  'Lunch Box': 18.5,
+  'Gift Package': 24,
+  'Documents': 12,
+  'Office Supplies': 30,
+  'Medicine': 22
+};
+
+const paymentLabels = {
+  card: 'Visa Card',
+  ecocash: 'EcoCash',
+  cash: 'Cash on Pickup'
+};
+
+function App() {
+  const [user, setUser] = useState(() => {
+    const saved = localStorage.getItem('delivery-user');
+    return saved ? JSON.parse(saved) : null;
+  });
+  const [token, setToken] = useState(localStorage.getItem('delivery-token') || '');
+  const [authMode, setAuthMode] = useState('login');
+  const [authForm, setAuthForm] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    password: '',
+    role: 'customer',
+    address: ''
+  });
+  const [orderForm, setOrderForm] = useState({
+    sender: '',
+    recipient: '',
+    pickupAddress: '',
+    officeName: '',
+    officeAddress: '',
+    packageType: 'Lunch Box',
+    notes: '',
+    paymentMethod: 'card',
+    amount: 18.5
+  });
+  const [orders, setOrders] = useState([]);
+  const [adminStats, setAdminStats] = useState(null);
+  const [driverOrders, setDriverOrders] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  const currentPrice = useMemo(() => packagePrices[orderForm.packageType] || 18.5, [orderForm.packageType]);
+
+  useEffect(() => {
+    if (token) {
+      fetchOrders();
+      if (user?.role === 'admin') fetchAdminStats();
+      if (user?.role === 'driver') fetchDriverOrders();
+    }
+  }, [token, user]);
+
+  const saveSession = (nextUser, nextToken) => {
+    setUser(nextUser);
+    setToken(nextToken);
+    localStorage.setItem('delivery-user', JSON.stringify(nextUser));
+    localStorage.setItem('delivery-token', nextToken);
+  };
+
+  const logout = () => {
+    setUser(null);
+    setToken('');
+    localStorage.removeItem('delivery-user');
+    localStorage.removeItem('delivery-token');
+  };
+
+  const fetchOrders = async () => {
+    try {
+      const res = await fetch('/api/orders');
+      const data = await res.json();
+      setOrders(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('Could not fetch orders', error);
+    }
+  };
+
+  const fetchAdminStats = async () => {
+    if (!token) return;
+    try {
+      const res = await fetch('/api/admin/stats', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      setAdminStats(data);
+    } catch (error) {
+      console.error('Admin stats failed', error);
+    }
+  };
+
+  const fetchDriverOrders = async () => {
+    if (!token) return;
+    try {
+      const res = await fetch('/api/drivers/my-orders', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      setDriverOrders(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('Driver orders failed', error);
+    }
+  };
+
+  const handleAuthChange = (e) => {
+    const { name, value } = e.target;
+    setAuthForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleOrderChange = (e) => {
+    const { name, value } = e.target;
+    setOrderForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleAuthSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+
+    const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+    const body = authMode === 'login'
+      ? { email: authForm.email, password: authForm.password }
+      : authForm;
+
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.message || 'Authentication failed');
+      }
+
+      saveSession(data.user, data.token);
+      alert(authMode === 'login' ? 'Logged in successfully' : 'Account created successfully');
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOrderSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+
+    try {
+      const payload = {
+        sender: orderForm.sender || user?.name || 'Guest User',
+        recipient: orderForm.recipient || 'Office Recipient',
+        pickupAddress: orderForm.pickupAddress,
+        officeName: orderForm.officeName,
+        officeAddress: orderForm.officeAddress,
+        packageType: orderForm.packageType,
+        paymentMethod: orderForm.paymentMethod,
+        amount: currentPrice,
+        notes: orderForm.notes,
+        senderPhone: user?.phone || '',
+        senderEmail: user?.email || '',
+        cardDetails: orderForm.paymentMethod === 'card' ? {
+          cardholderName: user?.name || 'Customer',
+          cardNumber: '4242 4242 4242 4242',
+          expiry: '12/28',
+          cvv: '123'
+        } : null,
+        ecoCashNumber: orderForm.paymentMethod === 'ecocash' ? '+263 71 234 5678' : null
+      };
+
+      const res = await fetch('/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || 'Order failed');
+
+      setOrders((prev) => [data, ...prev]);
+      alert('Order placed successfully');
+      setOrderForm((prev) => ({ ...prev, sender: '', recipient: '', pickupAddress: '', officeName: '', officeAddress: '', notes: '' }));
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAcceptDriverOrder = async (orderId) => {
+    try {
+      const res = await fetch(`/api/drivers/accept-order/${orderId}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || 'Could not accept order');
+      alert('Order accepted successfully');
+      fetchDriverOrders();
+    } catch (error) {
+      alert(error.message);
+    }
+  };
+
+  const handleUpdateStatus = async (orderId, status) => {
+    try {
+      const res = await fetch(`/api/drivers/orders/${orderId}/status`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ orderStatus: status })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || 'Status update failed');
+      alert(`Order status updated to ${status}`);
+      fetchDriverOrders();
+    } catch (error) {
+      alert(error.message);
+    }
+  };
+
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <div className="brand-area">
+          <div className="brand-mark">L</div>
+          <div>
+            <p className="eyebrow">Fast delivery</p>
+            <h1>Launch Delivery</h1>
+          </div>
+        </div>
+
+        <div className="topbar-actions">
+          {user ? (
+            <>
+              <span className="user-tag">{user.name} • {user.role}</span>
+              <button className="secondary-btn" onClick={logout}>Logout</button>
+            </>
+          ) : (
+            <div className="auth-switcher">
+              <button className={authMode === 'login' ? 'active' : ''} onClick={() => setAuthMode('login')}>Login</button>
+              <button className={authMode === 'register' ? 'active' : ''} onClick={() => setAuthMode('register')}>Register</button>
+            </div>
+          )}
+        </div>
+      </header>
+
+      {!user ? (
+        <section className="auth-panel panel">
+          <h2>{authMode === 'login' ? 'Welcome back' : 'Create account'}</h2>
+          <form onSubmit={handleAuthSubmit} className="auth-form">
+            {authMode === 'register' && (
+              <>
+                <label>
+                  Name
+                  <input name="name" value={authForm.name} onChange={handleAuthChange} placeholder="Your full name" />
+                </label>
+                <label>
+                  Phone
+                  <input name="phone" value={authForm.phone} onChange={handleAuthChange} placeholder="+263..." />
+                </label>
+                <label>
+                  Role
+                  <select name="role" value={authForm.role} onChange={handleAuthChange}>
+                    <option value="customer">Customer</option>
+                    <option value="driver">Driver</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </label>
+              </>
+            )}
+
+            <label>
+              Email
+              <input name="email" type="email" value={authForm.email} onChange={handleAuthChange} placeholder="you@example.com" />
+            </label>
+
+            {authMode === 'register' && (
+              <label>
+                Address
+                <input name="address" value={authForm.address} onChange={handleAuthChange} placeholder="Home address" />
+              </label>
+            )}
+
+            <label>
+              Password
+              <input name="password" type="password" value={authForm.password} onChange={handleAuthChange} placeholder="Password" />
+            </label>
+
+            <button type="submit" className="submit-btn" disabled={loading}>
+              {loading ? 'Please wait...' : authMode === 'login' ? 'Login' : 'Register'}
+            </button>
+          </form>
+        </section>
+      ) : (
+        <main className="main-grid">
+          {user.role === 'customer' && (
+            <>
+              <section className="panel">
+                <div className="section-heading">
+                  <span className="badge">New order</span>
+                  <h2>Send a package from home</h2>
+                </div>
+
+                <form onSubmit={handleOrderSubmit} className="order-form">
+                  <div className="two-col">
+                    <label>
+                      Sender name
+                      <input name="sender" value={orderForm.sender} onChange={handleOrderChange} placeholder="Sarah" />
+                    </label>
+                    <label>
+                      Recipient name
+                      <input name="recipient" value={orderForm.recipient} onChange={handleOrderChange} placeholder="James at office" />
+                    </label>
+                  </div>
+
+                  <div className="two-col">
+                    <label>
+                      Pickup address
+                      <input name="pickupAddress" value={orderForm.pickupAddress} onChange={handleOrderChange} placeholder="12 Park Road, Borrowdale" />
+                    </label>
+                    <label>
+                      Office / destination
+                      <input name="officeName" value={orderForm.officeName} onChange={handleOrderChange} placeholder="ZimBank Head Office" />
+                    </label>
+                  </div>
+
+                  <label>
+                    Office address
+                    <input name="officeAddress" value={orderForm.officeAddress} onChange={handleOrderChange} placeholder="Corner Samora Machel & 3rd Street" />
+                  </label>
+
+                  <label>
+                    Package type
+                    <select name="packageType" value={orderForm.packageType} onChange={handleOrderChange}>
+                      <option value="Lunch Box">Lunch Box</option>
+                      <option value="Gift Package">Gift Package</option>
+                      <option value="Documents">Documents</option>
+                      <option value="Office Supplies">Office Supplies</option>
+                      <option value="Medicine">Medicine</option>
+                    </select>
+                  </label>
+
+                  <label>
+                    Delivery note
+                    <textarea name="notes" value={orderForm.notes} onChange={handleOrderChange} placeholder="Lunch for my husband at 1:00 PM" />
+                  </label>
+
+                  <div className="payment-block">
+                    <h3>Payment method</h3>
+                    <div className="payment-options">
+                      {Object.entries(paymentLabels).map(([key, label]) => (
+                        <label key={key} className="payment-option">
+                          <input
+                            type="radio"
+                            name="paymentMethod"
+                            value={key}
+                            checked={orderForm.paymentMethod === key}
+                            onChange={handleOrderChange}
+                          />
+                          <span>{label}</span>
+                        </label>
+                      ))}
+                    </div>
+
+                    {orderForm.paymentMethod === 'cash' && (
+                      <div className="cash-box">
+                        <strong>Cash on pickup</strong>
+                        <p>Payment will be collected when the rider hands over the parcel.</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <button type="submit" className="submit-btn" disabled={loading}>
+                    {loading ? 'Submitting...' : 'Confirm order'}
+                  </button>
+                </form>
+              </section>
+
+              <aside className="panel summary-panel">
+                <div className="section-heading">
+                  <span className="badge alt">Summary</span>
+                  <h2>Order overview</h2>
+                </div>
+
+                <div className="summary-card">
+                  <p className="small-label">Selected package</p>
+                  <h3>{orderForm.packageType}</h3>
+
+                  <div className="row">
+                    <span>Pickup</span>
+                    <strong>{orderForm.pickupAddress || 'Home pickup'}</strong>
+                  </div>
+                  <div className="row">
+                    <span>Destination</span>
+                    <strong>{orderForm.officeName || 'Office location'}</strong>
+                  </div>
+                  <div className="row">
+                    <span>Payment</span>
+                    <strong>{paymentLabels[orderForm.paymentMethod]}</strong>
+                  </div>
+                  <div className="total-row">
+                    <span>Total</span>
+                    <strong>${currentPrice.toFixed(2)}</strong>
+                  </div>
+                </div>
+
+                <div className="recent-orders">
+                  <h3>Recent orders</h3>
+                  {orders.length ? orders.slice(0, 5).map((order) => (
+                    <div className="order-item" key={order._id || order.id}>
+                      <div>
+                        <h4>{order.packageType}</h4>
+                        <p>{order.sender} → {order.recipient}</p>
+                      </div>
+                      <div className="order-meta">
+                        <span>${Number(order.amount || 0).toFixed(2)}</span>
+                        <small>{order.status || order.orderStatus}</small>
+                      </div>
+                    </div>
+                  )) : <p>No orders yet.</p>}
+                </div>
+              </aside>
+            </>
+          )}
+
+          {user.role === 'admin' && (
+            <section className="panel admin-panel">
+              <div className="section-heading">
+                <span className="badge">Admin dashboard</span>
+                <h2>Operations overview</h2>
+              </div>
+
+              {adminStats ? (
+                <>
+                  <div className="stats-grid">
+                    <div className="stat-box"><span>Total Orders</span><strong>{adminStats.totalOrders}</strong></div>
+                    <div className="stat-box"><span>Completed</span><strong>{adminStats.completedOrders}</strong></div>
+                    <div className="stat-box"><span>Pending</span><strong>{adminStats.pendingOrders}</strong></div>
+                    <div className="stat-box"><span>Revenue</span><strong>${Number(adminStats.totalRevenue || 0).toFixed(2)}</strong></div>
+                  </div>
+                </>
+              ) : (
+                <p>Loading admin data...</p>
+              )}
+
+              <div className="admin-section">
+                <h3>Recent orders</h3>
+                {orders.length ? orders.slice(0, 8).map((order) => (
+                  <div key={order._id || order.id} className="admin-order-row">
+                    <div>
+                      <strong>{order.packageType}</strong>
+                      <p>{order.sender} → {order.recipient}</p>
+                    </div>
+                    <span>{order.paymentMethod}</span>
+                    <span>{order.orderStatus || order.status}</span>
+                  </div>
+                )) : <p>No orders available.</p>}
+              </div>
+            </section>
+          )}
+
+          {user.role === 'driver' && (
+            <section className="panel driver-panel">
+              <div className="section-heading">
+                <span className="badge">Driver dashboard</span>
+                <h2>Available deliveries</h2>
+              </div>
+
+              <div className="driver-section">
+                {driverOrders.length ? driverOrders.map((order) => (
+                  <div key={order._id || order.id} className="driver-order-card">
+                    <div>
+                      <h4>{order.packageType}</h4>
+                      <p>{order.sender} → {order.recipient}</p>
+                      <small>{order.pickupAddress} → {order.officeName}</small>
+                    </div>
+                    <div className="driver-actions">
+                      <button className="secondary-btn" onClick={() => handleUpdateStatus(order._id, 'picked_up')}>Picked Up</button>
+                      <button className="secondary-btn" onClick={() => handleUpdateStatus(order._id, 'in_transit')}>In Transit</button>
+                      <button className="submit-btn small" onClick={() => handleUpdateStatus(order._id, 'delivered')}>Delivered</button>
+                    </div>
+                  </div>
+                )) : <p>No assigned deliveries yet.</p>}
+              </div>
+            </section>
+          )}
+        </main>
+      )}
+    </div>
+  );
+}
+
+export default App;
